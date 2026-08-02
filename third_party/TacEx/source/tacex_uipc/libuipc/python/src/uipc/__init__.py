@@ -7,10 +7,13 @@ this_file_dir = os.path.dirname(__file__)
 if os.name not in ['nt', 'posix']:
     raise Exception('Unsupported platform: ' + os.name)
 
-sys.path.append(this_file_dir + '/modules/Release/bin')
-sys.path.append(this_file_dir + '/modules/RelWithDebInfo/bin')
-sys.path.append(this_file_dir + '/modules/releasedbg')
-sys.path.append(this_file_dir + '/modules/release')
+# Prefer the compiled bindings over the installed stub-only pyuipc package.
+sys.path[:0] = [
+    this_file_dir + '/modules/Release/bin',
+    this_file_dir + '/modules/RelWithDebInfo/bin',
+    this_file_dir + '/modules/releasedbg',
+    this_file_dir + '/modules/release',
+]
 
 import pyuipc
 

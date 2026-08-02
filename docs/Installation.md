@@ -28,7 +28,23 @@ GPU 空闲时，可以显式运行无头 smoke，启动 Isaac Sim 并加载 TacE
 bash scripts/install.sh --gpu-smoke
 ```
 
-首次启动 Isaac Sim 需要接受 NVIDIA Omniverse EULA。请先阅读许可证，再为非交互启动设置 `ACCEPT_EULA=Y`。
+首次启动 Isaac Sim 需要接受 NVIDIA Omniverse EULA。先在交互式终端运行 `isaacsim`
+阅读并接受许可证，退出后再为自动 smoke 设置 `ACCEPT_EULA=Y`。安装器不会代替用户接受
+许可证。
+
+`--gpu-smoke` 只有在 Kit 创建至少一个 Vulkan/RTX graphics device、随后成功导入
+TacEx 和 `tacex_uipc` 并输出最终成功标记时才返回 0。仅有 `nvidia-smi`、CUDA tensor
+或 `SimulationApp` 进程 exit 0 不构成通过；日志出现 `Driver Version: 0`、空 GPU 表或
+`No device could be created` 会返回非零。
+
+在同时存在根仓 `.venv` 和本 Conda 环境时，用明确路径检查依赖，避免 shell 继续解析到
+错误的 Python：
+
+```bash
+conda activate UniVTAC
+"$CONDA_PREFIX/bin/python" -m pip check
+"$CONDA_PREFIX/bin/python" -c 'import uipc; print(uipc.__version__)'
+```
 
 安装器只在当前进程导出 vcpkg 路径，不会修改 `~/.bashrc`。如果已有自定义 vcpkg checkout，可以通过 `VCPKG_ROOT=/path/to/vcpkg` 指定。
 
@@ -39,6 +55,11 @@ bash scripts/install.sh --gpu-smoke
 只有在 gzip 校验通过、归档内容确认为 tinygltf 源码且 tar 内 Git commit 与 tag 一致后，才可以使用临时 vcpkg overlay 更新该次下载的 SHA512。临时 overlay 不应提交为长期依赖答案，上游恢复后应移除。
 
 如果一次 manifest install 已经失败，`source/tacex_uipc/build/vcpkg.json` 可能存在而 `vcpkg_installed` 仍不完整。libuipc 会因 manifest 内容未变化把 `VCPKG_MANIFEST_INSTALL` 设为 `OFF`，随后以 `Eigen3Config.cmake` 缺失结束。此时不要把错误归因于 GCC/Make；保留失败目录作为证据，并从新的 `source/tacex_uipc/build` 目录重试。安装完成的 vcpkg binary cache 可以复用。
+
+libuipc 构建 pyuipc 时还会调用 `mypy.stubgen`，并在编译后递归执行 pip。安装器固定安装
+`mypy==2.3.0`，且让该子进程使用官方 PyPI，避免云端环境提供的不完整镜像缺少 `mypy`
+或 `setuptools`。pyuipc wheel 同时包含 stub-only 顶层包和编译扩展；vendored 修订会把
+编译模块目录放到搜索路径最前，防止 `import uipc` 误选 stub namespace。
 
 耗时较长的项目检查需要在安装后显式运行：
 

@@ -185,7 +185,8 @@ configure_python_tools() {
     log "Using Python executable: ${python_exe}"
     log "Using uv executable: ${uv_exe}"
     "${python_exe}" -m pip install --upgrade pip
-    "${uv_exe}" pip install 'setuptools<82' wheel vcs-versioning --index-url https://pypi.org/simple
+    "${uv_exe}" pip install 'setuptools<82' wheel vcs-versioning mypy==2.3.0 \
+        --index-url https://pypi.org/simple
 }
 
 install_isaac_sim() {
@@ -279,7 +280,10 @@ install_tacex_uipc() {
     fi
 
     log "Building and installing tacex_uipc."
-    "${uv_exe}" pip install -e "${TACEX_DIR}/source/tacex_uipc" -v --no-build-isolation
+    # libuipc invokes pip recursively after compiling pyuipc. Keep that child
+    # process off incomplete environment-provided package mirrors.
+    PIP_INDEX_URL=https://pypi.org/simple PIP_EXTRA_INDEX_URL= \
+        "${uv_exe}" pip install -e "${TACEX_DIR}/source/tacex_uipc" -v --no-build-isolation
 }
 
 verify_installation() {
@@ -296,19 +300,39 @@ verify_installation() {
 }
 
 run_gpu_smoke() {
+    local smoke_log
+
+    smoke_log="$(mktemp "${TMPDIR:-/tmp}/univtac-gpu-smoke.XXXXXX.log")"
     log "Launching the opt-in headless GPU smoke test."
-    "${python_exe}" - <<'PY'
+    "${python_exe}" - <<'PY' 2>&1 | tee "${smoke_log}"
 from isaaclab.app import AppLauncher
 
 simulation_app = AppLauncher(headless=True).app
 try:
+    import omni.gpu_foundation_factory
+
+    gpu_factory = omni.gpu_foundation_factory.get_gpu_foundation_factory_interface()
+    device_count = gpu_factory.get_device_count()
+    if device_count < 1:
+        raise RuntimeError("Isaac Sim GPU foundation did not create a graphics device.")
+
+    device_names = [gpu_factory.get_device_name(index) for index in range(device_count)]
+    print(f"[UniVTAC] Isaac Sim graphics devices: {device_names}")
+
     import tacex  # noqa: F401
     import tacex_uipc  # noqa: F401
 
-    print("[UniVTAC] Isaac Sim, TacEx, and tacex_uipc loaded successfully.")
+    print("[UniVTAC] Isaac Sim, TacEx, and tacex_uipc loaded successfully.", flush=True)
 finally:
     simulation_app.close()
 PY
+
+    if grep -Fq "No device could be created" "${smoke_log}"; then
+        die "Isaac Sim could not create a Vulkan/RTX graphics device. Full smoke output: ${smoke_log}"
+    fi
+    if ! grep -Fq "[UniVTAC] Isaac Sim, TacEx, and tacex_uipc loaded successfully." "${smoke_log}"; then
+        die "GPU smoke exited before its success sentinel. Full smoke output: ${smoke_log}"
+    fi
 }
 
 main() {
