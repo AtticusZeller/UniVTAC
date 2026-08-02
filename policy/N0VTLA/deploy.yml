@@ -1,0 +1,10 @@
+# N0-VTLA released UniVTAC insert-hole checkpoint.
+policy_name: N0VTLA
+seed: 0
+instruction_type: seen
+instuction_file: null
+server_addr: tcp://127.0.0.1:5557
+prompt: insert hole
+timeout_ms: 300000
+expected_horizon: 50
+raw_action_dim: 8

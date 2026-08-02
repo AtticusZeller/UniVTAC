@@ -1,4 +1,5 @@
 from shutil import ExecError
+import os
 import sys
 
 sys.path.append(".")
@@ -217,7 +218,8 @@ def main():
     curr_time = time.strftime(r'%Y-%m-%d_%H:%M:%S')
 
     env_cfg:BaseTaskCfg = task_module.TaskCfg()
-    env_cfg.save_dir = Path('eval_result') / policy_name / task_file_name / deploy_config_file.stem / curr_time
+    eval_root = Path(os.environ.get('UNIVTAC_EVAL_ROOT', 'eval_result'))
+    env_cfg.save_dir = eval_root / policy_name / task_file_name / deploy_config_file.stem / curr_time
     env_cfg.decimation = task_config.get("decimation", env_cfg.decimation)
     env_cfg.obs_data_type = task_config.get("observations", {})
     env_cfg.save_frequency = task_config.get("save_frequency", env_cfg.save_frequency)
@@ -237,7 +239,6 @@ def main():
     task:BaseTask = task_module.Task(env_cfg, mode='eval')
     task_init_cost = time.perf_counter() - init_start
     
-    import os
     if os.environ.get('TRAIN_CONFIG'):
         deploy_config['train_config'] = os.environ['TRAIN_CONFIG']
     
