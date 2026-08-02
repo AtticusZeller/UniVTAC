@@ -10,7 +10,7 @@ cd UniVTAC
 bash scripts/install.sh
 ```
 
-默认命令只安装依赖并执行轻量检查，不会运行 cuRobo 全量测试、启动 512 环境训练或采集演示数据。安装失败后可以直接重跑，已经完成的阶段会被复用。
+默认命令只安装依赖并执行轻量检查，不会运行 cuRobo 全量测试、启动 512 环境训练或采集演示数据。大多数安装阶段可以在失败后直接重跑；`tacex_uipc` 的 vcpkg manifest 安装是例外，未完成的 build cache 可能需要先隔离后再重试。
 
 Conda 构建工具链通过 conda-forge 安装，并显式忽略本机配置的默认 channel，因此安装器不会代替用户接受 Anaconda channel 的服务条款。
 
@@ -31,6 +31,14 @@ bash scripts/install.sh --gpu-smoke
 首次启动 Isaac Sim 需要接受 NVIDIA Omniverse EULA。请先阅读许可证，再为非交互启动设置 `ACCEPT_EULA=Y`。
 
 安装器只在当前进程导出 vcpkg 路径，不会修改 `~/.bashrc`。如果已有自定义 vcpkg checkout，可以通过 `VCPKG_ROOT=/path/to/vcpkg` 指定。
+
+### `tacex_uipc` / vcpkg 中断恢复
+
+如果首个错误是 `tinygltf` 的 `unexpected hash`，先停止并检查下载归档，不要根据控制台的 `Actual` 值直接关闭或改写完整性校验。2026-08-02 的 GitHub 自动归档变更会让有效的 tinygltf 源码 tarball 与旧 vcpkg port 的 SHA512 不同；同类上游事件见 [microsoft/vcpkg#53143](https://github.com/microsoft/vcpkg/issues/53143)。
+
+只有在 gzip 校验通过、归档内容确认为 tinygltf 源码且 tar 内 Git commit 与 tag 一致后，才可以使用临时 vcpkg overlay 更新该次下载的 SHA512。临时 overlay 不应提交为长期依赖答案，上游恢复后应移除。
+
+如果一次 manifest install 已经失败，`source/tacex_uipc/build/vcpkg.json` 可能存在而 `vcpkg_installed` 仍不完整。libuipc 会因 manifest 内容未变化把 `VCPKG_MANIFEST_INSTALL` 设为 `OFF`，随后以 `Eigen3Config.cmake` 缺失结束。此时不要把错误归因于 GCC/Make；保留失败目录作为证据，并从新的 `source/tacex_uipc/build` 目录重试。安装完成的 vcpkg binary cache 可以复用。
 
 耗时较长的项目检查需要在安装后显式运行：
 
