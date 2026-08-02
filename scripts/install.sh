@@ -1,165 +1,339 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -e -o pipefail
 
 CONDA_ENV_NAME="UniVTAC"
-load_env() {
-    if [ -z "$CONDA_PREFIX" ]; then
-        echo "Conda environment is not activated. Please activate the conda environment and run the script again."
-        exit 1
-    fi
-    conda_base=$(conda info --base)
+ISAACLAB_REVISION="v2.1.1"
+CUROBO_REVISION="0a50de1ba72db304195d59d9d0b1ed269696047f"
+RUN_GPU_SMOKE=false
+CONDA_TOOLCHAIN_PACKAGES=(python=3.10 pip cmake=3.26 gcc=11.4 cuda-toolkit=12.4 pkgconfig)
 
-    source ~/.bashrc
-    source ${conda_base}/etc/profile.d/conda.sh
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." >/dev/null 2>&1 && pwd)"
+TACEX_DIR="${REPO_ROOT}/third_party/TacEx"
+ISAACLAB_DIR="${REPO_ROOT}/third_party/IsaacLab"
+CUROBO_DIR="${REPO_ROOT}/third_party/curobo"
+VCPKG_ROOT="${VCPKG_ROOT:-${HOME}/Toolchain/vcpkg}"
 
-    # step 1: create conda environment
-    is_conda_env_exists=$(conda env list | grep ${CONDA_ENV_NAME})
-    if [ -z "$is_conda_env_exists" ]; then
-        echo "Creating conda environment '${CONDA_ENV_NAME}'..."
-        conda create -n ${CONDA_ENV_NAME} python=3.10 -y
-        conda env update -n ${CONDA_ENV_NAME} --file ./third_party/TacEx/source/tacex_uipc/libuipc/conda/env.yaml
-    fi
-    conda activate ${CONDA_ENV_NAME}
+usage() {
+    cat <<'EOF'
+Usage: bash scripts/install.sh [--gpu-smoke]
 
-    unset VIRTUAL_ENV
-    unset VIRTUAL_ENV_PROMPT
+Install UniVTAC into the UniVTAC Conda environment. The default flow installs
+and verifies dependencies without starting Isaac Sim or a training workload.
+
+Options:
+  --gpu-smoke  Launch Isaac Sim headlessly and import TacEx after installation.
+  -h, --help   Show this help message.
+EOF
 }
-export -f load_env
 
-load_env
-export python_exe=${CONDA_PREFIX}/bin/python
-export pip_exe=${CONDA_PREFIX}/bin/pip
+log() {
+    printf '[UniVTAC] %s\n' "$*"
+}
 
-if [ ! -f "${CONDA_PREFIX}/bin/uv" ]; then
-    ${pip_exe} install uv
-fi
-export uv_exe=${CONDA_PREFIX}/bin/uv
+die() {
+    printf '[UniVTAC][ERROR] %s\n' "$*" >&2
+    exit 1
+}
 
-echo "Using Python executable: ${python_exe}"
-echo "Using uv executable: ${uv_exe}"
+on_error() {
+    local exit_code=$?
+    local line_number=$1
+    trap - ERR
+    printf '[UniVTAC][ERROR] Installation stopped at line %s (exit %s).\n' "${line_number}" "${exit_code}" >&2
+    printf '[UniVTAC][ERROR] Fix the reported command and rerun this script; completed phases are reusable.\n' >&2
+    exit "${exit_code}"
+}
+trap 'on_error ${LINENO}' ERR
 
-export CUDA_HOME=$CONDA_PREFIX
-export PATH=$CUDA_HOME/bin:$PATH
-export LD_LIBRARY_PATH=$CUDA_HOME/lib
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --gpu-smoke)
+                RUN_GPU_SMOKE=true
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                usage >&2
+                die "Unknown option: $1"
+                ;;
+        esac
+        shift
+    done
+}
 
-${pip_exe} install --upgrade pip
-${uv_exe} pip install 'setuptools<82' wheel
+conda_env_exists() {
+    conda env list | awk 'NF >= 2 && $1 !~ /^#/ { print $1 }' | grep -Fxq "${CONDA_ENV_NAME}"
+}
 
-# step 2: install isaacsim
-if ${pip_exe} show isaacsim >/dev/null 2>&1; then
-    echo "isaacsim is already installed. Skipping installation..."
-else
-    echo "Installing isaacsim..."
-    ${uv_exe} pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu124
-    ${uv_exe} pip install 'isaacsim[all,extscache]==4.5.0' --extra-index-url https://pypi.nvidia.com
-fi
+package_version() {
+    local package_name=$1
+    "${python_exe}" -c 'import importlib.metadata as m, sys; print(m.version(sys.argv[1]))' "${package_name}" 2>/dev/null
+}
 
-# step 3: install isaaclab
-if ${pip_exe} show isaaclab >/dev/null 2>&1; then
-    echo "isaaclab is already installed. Skipping installation..."
-else
-    echo "Installing isaaclab..."
-    # install dependencies via apt (Ubuntu)
-    sudo apt install cmake build-essential
+package_is_installed() {
+    package_version "$1" >/dev/null
+}
 
-    cd third_party
-    if [ -d "IsaacLab" ]; then
-        cd IsaacLab
-    else
-        git clone https://github.com/isaac-sim/IsaacLab
-        cd IsaacLab
-    fi
-    git checkout v2.1.1
-    ${uv_exe} pip install flatdict==4.0.1 --no-build-isolation
-    ./isaaclab.sh --install
-    cd ../..
-fi 
+ensure_system_packages() {
+    local -a missing_packages=()
+    local package_name
 
-# step 4: install curobo
-if ${pip_exe} show nvidia_curobo >/dev/null 2>&1; then
-    echo "curobo is already installed. Skipping installation..."
-else
-    echo "Installing curobo..."
-    sudo apt install git-lfs
-    
-    cd third_party
-    if [ -d "curobo" ]; then
-        cd curobo
-    else
-        git clone https://github.com/NVlabs/curobo.git
-        cd curobo
-    fi
-    # checkout to v0.7.7
-    git checkout 0a50de1ba72db304195d59d9d0b1ed269696047f
-
-    if ${uv_exe} pip list 2>/dev/null | grep -q "torch"; then
-        torch_version=$(${pip_exe} show torch 2>/dev/null | grep "Version:" | awk '{print $2}')
-        echo "[INFO] Found PyTorch version ${torch_version} installed."
-        if [[ "${torch_version}" != "2.5.1+cu124" ]]; then
-            echo "[INFO] Uninstalling PyTorch version ${torch_version}..."
-            ${uv_exe} pip uninstall -y torch torchvision torchaudio
-            ${uv_exe} pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu124
-        else
-            echo "[INFO] PyTorch 2.5.1 is already installed."
+    command -v apt-get >/dev/null 2>&1 || die "This installer currently supports apt-based Ubuntu systems."
+    for package_name in cmake build-essential git-lfs curl zip unzip tar; do
+        if ! dpkg-query -W -f='${Status}' "${package_name}" 2>/dev/null | grep -Fq 'install ok installed'; then
+            missing_packages+=("${package_name}")
         fi
-    fi
-    ${uv_exe} pip install warp-lang==1.0.0 --no-build-isolation
-    ${uv_exe} pip install -e . --no-build-isolation
+    done
 
-    echo "Running curobo tests..."
-    python3 -m pytest .
-    cd ../..
-fi
-
-# step 5: install tacex (without libuipc)
-if ${pip_exe} show tacex >/dev/null 2>&1; then
-    echo "tacex is already installed. Skipping installation..."
-else
-    echo "Installing tacex..."
-    cd third_party/TacEx
-    ./tacex.sh -i
-    ${uv_exe} pip uninstall torch_scatter -y
-    ${uv_exe} pip install torch_scatter==2.1.2 -f https://data.pyg.org/whl/torch-2.5.1+cu124.html
-
-    echo "Running tacex tests..."
-    python ./scripts/reinforcement_learning/skrl/train.py --task TacEx-Ball-Rolling-Tactile-RGB-v0 --num_envs 512 --enable_cameras --livestream 2
-    cd ../..
-fi
-
-# step 6: install libuipc and tacex_uipc
-if ${pip_exe} show libuipc >/dev/null 2>&1; then
-    echo "libuipc is already installed. Skipping installation..."
-else
-    echo "Installing libuipc..."
-
-    current_dir=$(pwd)
-
-    if [ -d "Toolchain" ]; then
-        echo "Toolchain directory already exists. Skipping cloning vcpkg..."
-        mkdir ~/Toolchain
-        cd ~/Toolchain
-        git clone https://github.com/microsoft/vcpkg.git
-        cd vcpkg
-        ./bootstrap-vcpkg.sh -disableMetrics
+    if [[ ${#missing_packages[@]} -eq 0 ]]; then
+        log "System build packages are already installed."
+        return
     fi
 
-    export CMAKE_TOOLCHAIN_FILE="$HOME/Toolchain/vcpkg/scripts/buildsystems/vcpkg.cmake"
-    if [ -z $(grep "CMAKE_TOOLCHAIN_FILE" ~/.bashrc) ]; then
-        echo "export CMAKE_TOOLCHAIN_FILE=$CMAKE_TOOLCHAIN_FILE" >> ~/.bashrc
+    log "Installing system packages: ${missing_packages[*]}"
+    if [[ ${EUID} -eq 0 ]]; then
+        apt-get install -y "${missing_packages[@]}"
+    elif command -v sudo >/dev/null 2>&1; then
+        sudo apt-get install -y "${missing_packages[@]}"
     else
-        sed -i "s|^export CMAKE_TOOLCHAIN_FILE=.*$|export CMAKE_TOOLCHAIN_FILE=$CMAKE_TOOLCHAIN_FILE|g" ~/.bashrc
+        die "Root access or sudo is required to install: ${missing_packages[*]}"
     fi
-    
-    load_env
-    cd ${current_dir}/third_party/TacEx
-    if [ -d "source/tacex_uipc/build" ]; then
-        rm -rf source/tacex_uipc/build
+}
+
+ensure_git_checkout() {
+    local name=$1
+    local repository_url=$2
+    local revision=$3
+    local destination=$4
+    local actual_url target_commit current_commit
+
+    if [[ -e "${destination}" && ! -d "${destination}/.git" ]]; then
+        die "${destination} exists but is not a Git checkout; move it aside and rerun."
     fi
-    ${uv_exe} pip install -e source/tacex_uipc -v --no-build-isolation
+
+    if [[ ! -d "${destination}/.git" ]]; then
+        log "Cloning ${name} into ${destination}."
+        git clone "${repository_url}" "${destination}"
+    fi
+
+    actual_url="$(git -C "${destination}" remote get-url origin)"
+    [[ "${actual_url}" == "${repository_url}" || "${actual_url}" == "${repository_url%.git}" ]] || \
+        die "${name} origin is ${actual_url}, expected ${repository_url}."
+
+    if ! git -C "${destination}" rev-parse --verify --quiet "${revision}^{commit}" >/dev/null; then
+        log "Fetching ${name} revision ${revision}."
+        git -C "${destination}" fetch --tags origin "${revision}"
+    fi
+
+    target_commit="$(git -C "${destination}" rev-parse "${revision}^{commit}")"
+    current_commit="$(git -C "${destination}" rev-parse HEAD)"
+    if [[ "${current_commit}" == "${target_commit}" ]]; then
+        log "${name} is already at ${revision}."
+        return
+    fi
+
+    if [[ -n "$(git -C "${destination}" status --porcelain)" ]]; then
+        die "${name} has local changes and is not at ${revision}; refusing to overwrite it."
+    fi
+    git -C "${destination}" checkout --detach "${target_commit}"
+}
+
+load_conda_env() {
+    local conda_base
+
+    command -v conda >/dev/null 2>&1 || die "Conda is not available on PATH."
+    conda_base="$(conda info --base)"
+    # shellcheck disable=SC1091
+    source "${conda_base}/etc/profile.d/conda.sh"
+
+    if conda_env_exists; then
+        log "Conda environment ${CONDA_ENV_NAME} already exists."
+    else
+        log "Creating Conda environment ${CONDA_ENV_NAME} with the UIPC toolchain."
+        conda create --override-channels --channel conda-forge \
+            --name "${CONDA_ENV_NAME}" -y "${CONDA_TOOLCHAIN_PACKAGES[@]}"
+    fi
+
+    conda activate "${CONDA_ENV_NAME}"
+    unset VIRTUAL_ENV VIRTUAL_ENV_PROMPT
+
+    # Always reconcile the build toolchain so a failed first run can resume.
+    log "Reconciling the UIPC Conda toolchain."
+    conda install --override-channels --channel conda-forge \
+        --name "${CONDA_ENV_NAME}" -y "${CONDA_TOOLCHAIN_PACKAGES[@]}"
+    conda activate "${CONDA_ENV_NAME}"
+}
+
+configure_python_tools() {
+    python_exe="${CONDA_PREFIX}/bin/python"
+    pip_exe="${CONDA_PREFIX}/bin/pip"
+
+    if [[ ! -x "${CONDA_PREFIX}/bin/uv" ]]; then
+        "${python_exe}" -m pip install uv --index-url https://pypi.org/simple
+    fi
+    uv_exe="${CONDA_PREFIX}/bin/uv"
+
+    export python_exe pip_exe uv_exe
+    export CUDA_HOME="${CONDA_PREFIX}"
+    export PATH="${CUDA_HOME}/bin:${PATH}"
+    export LD_LIBRARY_PATH="${CUDA_HOME}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
+    log "Using Python executable: ${python_exe}"
+    log "Using uv executable: ${uv_exe}"
+    "${python_exe}" -m pip install --upgrade pip
+    "${uv_exe}" pip install 'setuptools<82' wheel vcs-versioning --index-url https://pypi.org/simple
+}
+
+install_isaac_sim() {
+    local isaacsim_version torch_version
+
+    isaacsim_version="$(package_version isaacsim || true)"
+    torch_version="$(package_version torch || true)"
+    if [[ "${isaacsim_version}" == 4.5.0* && "${torch_version}" == 2.5.1* ]]; then
+        log "Isaac Sim ${isaacsim_version} and PyTorch ${torch_version} are already installed."
+        return
+    fi
+
+    log "Installing PyTorch 2.5.1 (CUDA 12.4) and Isaac Sim 4.5.0."
+    "${uv_exe}" pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu124
+    "${uv_exe}" pip install 'isaacsim[all,extscache]==4.5.0' --extra-index-url https://pypi.nvidia.com
+}
+
+install_isaac_lab() {
+    local extension_dir
+
+    ensure_git_checkout "Isaac Lab" "https://github.com/isaac-sim/IsaacLab.git" "${ISAACLAB_REVISION}" "${ISAACLAB_DIR}"
+    if package_is_installed isaaclab; then
+        log "Isaac Lab is already installed from the pinned source checkout."
+        return
+    fi
+
+    log "Installing Isaac Lab ${ISAACLAB_REVISION}."
+    "${uv_exe}" pip install flatdict==4.0.1 --no-build-isolation
+    # v2.1.1's wrapper replaces UniVTAC's required torch 2.5.1+cu124 with
+    # torch 2.7.0+cu128. Install the same source extensions without that swap.
+    for extension_dir in "${ISAACLAB_DIR}"/source/*; do
+        if [[ -f "${extension_dir}/setup.py" ]]; then
+            "${uv_exe}" pip install --editable "${extension_dir}" --index-url https://pypi.org/simple
+        fi
+    done
+    "${uv_exe}" pip install --editable "${ISAACLAB_DIR}/source/isaaclab_rl[all]" \
+        --editable "${ISAACLAB_DIR}/source/isaaclab_mimic[all]" \
+        --index-url https://pypi.org/simple
+}
+
+install_curobo() {
+    ensure_git_checkout "cuRobo" "https://github.com/NVlabs/curobo.git" "${CUROBO_REVISION}" "${CUROBO_DIR}"
+    if package_is_installed nvidia_curobo; then
+        log "cuRobo is already installed from the pinned source checkout."
+        return
+    fi
+
+    log "Installing cuRobo ${CUROBO_REVISION}."
+    git -C "${CUROBO_DIR}" lfs install --local
+    git -C "${CUROBO_DIR}" lfs pull
+    "${uv_exe}" pip install warp-lang==1.0.0 --no-build-isolation
+    "${uv_exe}" pip install -e "${CUROBO_DIR}" --no-build-isolation
+}
+
+install_tacex() {
+    log "Installing the bundled TacEx core packages."
+    PIP_INDEX_URL=https://pypi.org/simple TERM=xterm "${TACEX_DIR}/tacex.sh" --install
+    "${uv_exe}" pip uninstall torch_scatter -y || true
+    "${uv_exe}" pip install torch_scatter==2.1.2 -f https://data.pyg.org/whl/torch-2.5.1+cu124.html
+}
+
+ensure_vcpkg() {
+    local toolchain_file="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+    local vcpkg_executable="${VCPKG_ROOT}/vcpkg"
+
+    if [[ ! -d "${VCPKG_ROOT}/.git" ]]; then
+        if [[ -e "${VCPKG_ROOT}" ]]; then
+            die "${VCPKG_ROOT} exists but is not a vcpkg Git checkout."
+        fi
+        log "Cloning vcpkg into ${VCPKG_ROOT}."
+        mkdir -p "$(dirname -- "${VCPKG_ROOT}")"
+        git clone https://github.com/microsoft/vcpkg.git "${VCPKG_ROOT}"
+    fi
+
+    if [[ ! -x "${vcpkg_executable}" ]]; then
+        log "Bootstrapping vcpkg."
+        "${VCPKG_ROOT}/bootstrap-vcpkg.sh" -disableMetrics
+    else
+        log "vcpkg is already bootstrapped."
+    fi
+
+    export VCPKG_ROOT
+    export CMAKE_TOOLCHAIN_FILE="${toolchain_file}"
+}
+
+install_tacex_uipc() {
+    ensure_vcpkg
+    if package_is_installed tacex_uipc; then
+        log "tacex_uipc is already installed."
+        return
+    fi
+
+    log "Building and installing tacex_uipc."
+    "${uv_exe}" pip install -e "${TACEX_DIR}/source/tacex_uipc" -v --no-build-isolation
+}
+
+verify_installation() {
+    local package_name
+
+    [[ "$(package_version isaacsim)" == 4.5.0* ]] || die "isaacsim 4.5.0 is not installed."
+    [[ "$(package_version torch)" == 2.5.1* ]] || die "PyTorch 2.5.1 is not installed."
+    for package_name in isaaclab nvidia_curobo tacex tacex_assets tacex_tasks tacex_uipc torch_scatter; do
+        package_is_installed "${package_name}" || die "Python package ${package_name} is not installed."
+    done
+    "${python_exe}" -m pip check
+    "${python_exe}" -c 'import uipc; print("[UniVTAC] uipc extension import succeeded.")'
+    log "Dependency verification passed."
+}
+
+run_gpu_smoke() {
+    log "Launching the opt-in headless GPU smoke test."
+    "${python_exe}" - <<'PY'
+from isaaclab.app import AppLauncher
+
+simulation_app = AppLauncher(headless=True).app
+try:
+    import tacex  # noqa: F401
+    import tacex_uipc  # noqa: F401
+
+    print("[UniVTAC] Isaac Sim, TacEx, and tacex_uipc loaded successfully.")
+finally:
+    simulation_app.close()
+PY
+}
+
+main() {
+    parse_args "$@"
+    cd "${REPO_ROOT}"
+
+    ensure_system_packages
+    load_conda_env
+    configure_python_tools
+    install_isaac_sim
+    install_isaac_lab
+    install_curobo
+    install_tacex
+    install_tacex_uipc
+    "${uv_exe}" pip install transforms3d trimesh tetgen
+    verify_installation
+
+    if [[ "${RUN_GPU_SMOKE}" == true ]]; then
+        run_gpu_smoke
+    else
+        log "Skipping GPU smoke. Rerun with --gpu-smoke when a GPU is available."
+    fi
+    log "Installation completed successfully. Activate it with: conda activate ${CONDA_ENV_NAME}"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
 fi
-
-${uv_exe} pip install transforms3d trimesh tetgen
-
-echo "Installation completed successfully!"
-echo "Trying to collect data for grasp classification demo."
-bash collect_data.sh grasp_classify demo 0

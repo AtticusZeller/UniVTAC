@@ -10,6 +10,39 @@ cd UniVTAC
 bash scripts/install.sh
 ```
 
+默认命令只安装依赖并执行轻量检查，不会运行 cuRobo 全量测试、启动 512 环境训练或采集演示数据。安装失败后可以直接重跑，已经完成的阶段会被复用。
+
+Conda 构建工具链通过 conda-forge 安装，并显式忽略本机配置的默认 channel，因此安装器不会代替用户接受 Anaconda channel 的服务条款。
+
+Isaac Lab 2.1.1 的上游 wrapper 会强制改装 PyTorch 2.7.0+cu128；UniVTAC 需要的 cuRobo 栈固定为 PyTorch 2.5.1+cu124。安装器因此直接安装同一 tag 下的 editable source extensions，避免无效且不兼容的先升级、再降级。
+
+脚本可以从任意工作目录启动：
+
+```bash
+bash /path/to/UniVTAC/scripts/install.sh
+```
+
+GPU 空闲时，可以显式运行无头 smoke，启动 Isaac Sim 并加载 TacEx：
+
+```bash
+bash scripts/install.sh --gpu-smoke
+```
+
+首次启动 Isaac Sim 需要接受 NVIDIA Omniverse EULA。请先阅读许可证，再为非交互启动设置 `ACCEPT_EULA=Y`。
+
+安装器只在当前进程导出 vcpkg 路径，不会修改 `~/.bashrc`。如果已有自定义 vcpkg checkout，可以通过 `VCPKG_ROOT=/path/to/vcpkg` 指定。
+
+耗时较长的项目检查需要在安装后显式运行：
+
+```bash
+conda activate UniVTAC
+python -m pytest third_party/curobo
+python third_party/TacEx/scripts/reinforcement_learning/skrl/train.py \
+  --task TacEx-Ball-Rolling-Tactile-RGB-v0 \
+  --num_envs 512 --enable_cameras --livestream 2
+bash collect_data.sh grasp_classify demo 0
+```
+
 ## Manual Installation Instructions
 
 ### Requirements
