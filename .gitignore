@@ -27,6 +27,7 @@ __tracked_surface.stl
 !/assets/embodiments/franka/*
 
 /third_party/curobo
+/third_party/IsaacLab
 /third_party/isaacsim
 /third_party/isaacsim_isaacsim_link
 /third_party/libuipc-samples
