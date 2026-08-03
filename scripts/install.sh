@@ -13,6 +13,7 @@ TACEX_DIR="${REPO_ROOT}/third_party/TacEx"
 ISAACLAB_DIR="${REPO_ROOT}/third_party/IsaacLab"
 CUROBO_DIR="${REPO_ROOT}/third_party/curobo"
 VCPKG_ROOT="${VCPKG_ROOT:-${HOME}/Toolchain/vcpkg}"
+VCPKG_OVERLAY_DIR="${SCRIPT_DIR}/vcpkg-overlays"
 
 usage() {
     cat <<'EOF'
@@ -67,6 +68,28 @@ parse_args() {
 
 conda_env_exists() {
     conda env list | awk 'NF >= 2 && $1 !~ /^#/ { print $1 }' | grep -Fxq "${CONDA_ENV_NAME}"
+}
+
+find_conda_executable() {
+    local candidate
+
+    if command -v conda >/dev/null 2>&1; then
+        command -v conda
+        return
+    fi
+
+    for candidate in \
+        "${CONDA_EXE:-}" \
+        "${CONDA_ROOT:+${CONDA_ROOT}/bin/conda}" \
+        "${HOME}/miniforge3/bin/conda" \
+        "${HOME}/miniconda3/bin/conda"; do
+        if [[ -n "${candidate}" && -x "${candidate}" ]]; then
+            printf '%s\n' "${candidate}"
+            return
+        fi
+    done
+
+    die "Conda is not available. Add it to PATH or set CONDA_EXE/CONDA_ROOT."
 }
 
 package_version() {
@@ -143,10 +166,10 @@ ensure_git_checkout() {
 }
 
 load_conda_env() {
-    local conda_base
+    local conda_base conda_executable
 
-    command -v conda >/dev/null 2>&1 || die "Conda is not available on PATH."
-    conda_base="$(conda info --base)"
+    conda_executable="$(find_conda_executable)"
+    conda_base="$("${conda_executable}" info --base)"
     # shellcheck disable=SC1091
     source "${conda_base}/etc/profile.d/conda.sh"
 
@@ -269,6 +292,7 @@ ensure_vcpkg() {
     fi
 
     export VCPKG_ROOT
+    export VCPKG_OVERLAY_PORTS="${VCPKG_OVERLAY_DIR}${VCPKG_OVERLAY_PORTS:+:${VCPKG_OVERLAY_PORTS}}"
     export CMAKE_TOOLCHAIN_FILE="${toolchain_file}"
 }
 

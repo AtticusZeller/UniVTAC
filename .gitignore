@@ -31,6 +31,8 @@ __tracked_surface.stl
 /third_party/isaacsim
 /third_party/isaacsim_isaacsim_link
 /third_party/libuipc-samples
+/third_party/TacEx/source/tacex_uipc/build.failed-*
+/${data}/
 
 /policy/VTLA/LLama*
 /policy/act_data/**

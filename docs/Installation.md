@@ -14,6 +14,13 @@ bash scripts/install.sh
 
 Conda 构建工具链通过 conda-forge 安装，并显式忽略本机配置的默认 channel，因此安装器不会代替用户接受 Anaconda channel 的服务条款。
 
+安装器依次从当前 `PATH`、`CONDA_EXE`、`CONDA_ROOT`、`$HOME/miniforge3` 和
+`$HOME/miniconda3` 查找 Conda。无需先执行 `conda init`；非标准安装位置可以显式指定：
+
+```bash
+CONDA_ROOT=/path/to/miniforge3 bash scripts/install.sh
+```
+
 Isaac Lab 2.1.1 的上游 wrapper 会强制改装 PyTorch 2.7.0+cu128；UniVTAC 需要的 cuRobo 栈固定为 PyTorch 2.5.1+cu124。安装器因此直接安装同一 tag 下的 editable source extensions，避免无效且不兼容的先升级、再降级。
 
 脚本可以从任意工作目录启动：
@@ -50,9 +57,12 @@ conda activate UniVTAC
 
 ### `tacex_uipc` / vcpkg 中断恢复
 
-如果首个错误是 `tinygltf` 的 `unexpected hash`，先停止并检查下载归档，不要根据控制台的 `Actual` 值直接关闭或改写完整性校验。2026-08-02 的 GitHub 自动归档变更会让有效的 tinygltf 源码 tarball 与旧 vcpkg port 的 SHA512 不同；同类上游事件见 [microsoft/vcpkg#53143](https://github.com/microsoft/vcpkg/issues/53143)。
-
-只有在 gzip 校验通过、归档内容确认为 tinygltf 源码且 tar 内 Git commit 与 tag 一致后，才可以使用临时 vcpkg overlay 更新该次下载的 SHA512。临时 overlay 不应提交为长期依赖答案，上游恢复后应移除。
+2026-08-02，GitHub 在 tag 未变化时重新生成了 tinygltf v2.9.3 自动归档，导致旧 vcpkg
+port 的 SHA512 失效；同类事件见
+[microsoft/vcpkg#53143](https://github.com/microsoft/vcpkg/issues/53143)。仓库内
+`scripts/vcpkg-overlays/tinygltf` 固定使用经过 gzip、源码树和 tag commit 校验的新归档
+SHA512，安装器会自动传给 vcpkg。完整性检查仍然启用；如果归档再次变化，安装会安全失败，
+不得直接采用控制台的新 `Actual` 值。
 
 如果一次 manifest install 已经失败，`source/tacex_uipc/build/vcpkg.json` 可能存在而 `vcpkg_installed` 仍不完整。libuipc 会因 manifest 内容未变化把 `VCPKG_MANIFEST_INSTALL` 设为 `OFF`，随后以 `Eigen3Config.cmake` 缺失结束。此时不要把错误归因于 GCC/Make；保留失败目录作为证据，并从新的 `source/tacex_uipc/build` 目录重试。安装完成的 vcpkg binary cache 可以复用。
 
